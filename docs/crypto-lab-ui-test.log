@@ -1,0 +1,173 @@
+Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -project /Users/cin/Documents/Codex/Chat/Chat/Chat.xcodeproj -scheme Chat -destination "platform=iOS Simulator,id=246BBC59-54F2-4387-AA12-BDD629A795DC" -derivedDataPath /private/tmp/chat-crypto-build test-without-building -parallel-testing-enabled NO "-only-testing:ChatUITests/CryptoLabUITests" CODE_SIGNING_ALLOWED=NO
+
+Build settings from command line:
+    CODE_SIGNING_ALLOWED = NO
+
+2026-10-07 17:10:43.235 xcodebuild[7472:237201] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-10-07 17:11:05.278009-0400 ChatUITests-Runner[7545:238445] [Default] Running tests...
+objc[7545]: Class UIAccessibilityLoaderWebShared is implemented in both /private/var/run/com.apple.security.cryptexd/mnt/com.apple.iPhoneOS.SimulatorRuntime-v24.1.434.0.REoPbF/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime/Contents/Resources/RuntimeRoot/System/Library/AccessibilityBundles/WebKit.axbundle/WebKit (0x10822c398) and /private/var/run/com.apple.security.cryptexd/mnt/com.apple.iPhoneOS.SimulatorRuntime-v24.1.434.0.REoPbF/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.0.simruntime/Contents/Resources/RuntimeRoot/System/Library/AccessibilityBundles/WebCore.axbundle/WebCore (0x108b84310). This may cause spurious casting failures and mysterious crashes. One of the duplicates must be removed or renamed.
+    t =      nans Interface orientation changed to Portrait
+Test Suite 'Selected tests' started at 2026-10-07 17:11:11.614.
+Test Suite 'ChatUITests.xctest' started at 2026-10-07 17:11:11.616.
+Test Suite 'CryptoLabUITests' started at 2026-10-07 17:11:11.616.
+Test Case '-[ChatUITests.CryptoLabUITests testOfflineEncryptionButtonsAndChatBubble]' started.
+    t =     0.00s Start Test at 2026-10-07 17:11:11.617
+    t =     0.23s Set Up
+    t =     0.24s Open personal-learning.Chat
+    t =     0.24s     Launch personal-learning.Chat
+2026-10-07 17:11:11.959 xcodebuild[7472:237201] [MT] IDELaunchParametersSnapshot: debugger version lookup failed for path '<nil>': noURL
+2026-10-07 17:11:11.959 xcodebuild[7472:237201] [MT] IDELaunchParametersSnapshot: no debugger version
+    t =     1.94s         Setting up automation session
+    t =     4.47s         Wait for personal-learning.Chat to idle
+    t =     6.04s Checking existence of `"加密实验" Button`
+    t =     6.21s Find the "本地加密实验（无需登录）" Button
+    t =     6.38s Swipe up Target Application 'personal-learning.Chat'
+    t =     6.38s     Wait for personal-learning.Chat to idle
+    t =     6.40s     Find the Target Application 'personal-learning.Chat'
+    t =     6.42s     Check for interrupting elements affecting "Chat" Application
+    t =     6.60s     Synthesize event
+    t =     7.13s     Wait for personal-learning.Chat to idle
+    t =     7.18s Find the "本地加密实验（无需登录）" Button
+    t =     7.33s Swipe up Target Application 'personal-learning.Chat'
+    t =     7.33s     Wait for personal-learning.Chat to idle
+    t =     7.38s     Find the Target Application 'personal-learning.Chat'
+    t =     7.44s     Check for interrupting elements affecting "Chat" Application
+    t =     7.60s     Synthesize event
+    t =     8.07s     Wait for personal-learning.Chat to idle
+    t =     8.11s Find the "本地加密实验（无需登录）" Button
+    t =     8.24s Swipe up Target Application 'personal-learning.Chat'
+    t =     8.24s     Wait for personal-learning.Chat to idle
+    t =     8.25s     Find the Target Application 'personal-learning.Chat'
+    t =     8.29s     Check for interrupting elements affecting "Chat" Application
+    t =     8.39s     Synthesize event
+    t =     8.84s     Wait for personal-learning.Chat to idle
+    t =     8.93s Find the "本地加密实验（无需登录）" Button
+    t =     9.23s Swipe up Target Application 'personal-learning.Chat'
+    t =     9.23s     Wait for personal-learning.Chat to idle
+    t =     9.31s     Find the Target Application 'personal-learning.Chat'
+    t =     9.38s     Check for interrupting elements affecting "Chat" Application
+    t =     9.54s     Synthesize event
+    t =     9.97s     Wait for personal-learning.Chat to idle
+    t =     9.99s Waiting 5.0s for "本地加密实验（无需登录）" Button to exist
+    t =    11.04s     Checking `Expect predicate `existsNoRetry == 1` for object "本地加密实验（无需登录）" Button`
+    t =    11.04s         Checking existence of `"本地加密实验（无需登录）" Button`
+    t =    11.08s Tap "本地加密实验（无需登录）" Button
+    t =    11.08s     Wait for personal-learning.Chat to idle
+    t =    11.09s     Find the "本地加密实验（无需登录）" Button
+    t =    11.13s     Check for interrupting elements affecting "本地加密实验（无需登录）" Button
+    t =    11.28s     Found 1 interrupting element:
+    t =    11.28s         Find the "安全存储" Alert
+    t =    11.31s "安全存储" Alert from Target Application 'personal-learning.Chat'
+    t =    11.32s     Invoking UI interruption monitors for "安全存储" Alert from Target Application 'personal-learning.Chat'
+    t =    11.32s         Find the "安全存储" Alert
+    t =    11.34s         Checking existence of `Button (Elements matching predicate 'userTestingAttributes CONTAINS "cancel-button"')`
+    t =    11.38s         Get all elements bound by accessibility element for: Elements matching predicate 'userTestingAttributes CONTAINS "default-button"'
+    t =    11.41s         Checking existence of `"知道了" Button`
+    t =    11.44s Default interruption handler attempting to dismiss alert by tapping "知道了" Button.
+    t =    11.44s         Tap "知道了" Button
+    t =    11.44s             Wait for personal-learning.Chat to idle
+    t =    11.45s             Find the "知道了" Button
+    t =    11.49s             Check for interrupting elements affecting "知道了" Button
+    t =    11.55s             Synthesize event
+    t =    11.86s             Wait for personal-learning.Chat to idle
+<unknown>:0: warning: -[ChatUITests.CryptoLabUITests testOfflineEncryptionButtonsAndChatBubble] : Publishing changes from within view updates is not allowed, this will cause undefined behavior.
+    t =    12.16s         Waiting 1.0s for Alert to not exist
+    t =    13.17s             Checking `Expect predicate `existsNoRetry == 0` for object Alert`
+    t =    13.17s                 Checking existence of `Alert`
+    t =    13.20s             Checking existence of `Alert`
+    t =    13.22s         Verifying handling...
+    t =    13.25s Confirmed successful handling of interrupting element
+    t =    13.26s     Synthesize event
+    t =    13.59s     Wait for personal-learning.Chat to idle
+    t =    14.10s Find the "crypto.verify" Button
+    t =    14.16s Find the "crypto.generate" Button
+    t =    14.21s Waiting 3.0s for "crypto.generate" Button to exist
+    t =    15.28s     Checking `Expect predicate `existsNoRetry == 1` for object "crypto.generate" Button`
+    t =    15.28s         Checking existence of `"crypto.generate" Button`
+    t =    15.33s Find the "crypto.generate" Button
+    t =    15.39s Tap "crypto.generate" Button
+    t =    15.39s     Wait for personal-learning.Chat to idle
+    t =    15.42s     Find the "crypto.generate" Button
+    t =    15.47s     Check for interrupting elements affecting "crypto.generate" Button
+    t =    15.55s     Synthesize event
+    t =    15.86s     Wait for personal-learning.Chat to idle
+    t =    16.12s Find the "crypto.verify" Button
+    t =    16.17s Waiting 3.0s for "crypto.verify" Button to exist
+    t =    17.27s     Checking `Expect predicate `existsNoRetry == 1` for object "crypto.verify" Button`
+    t =    17.27s         Checking existence of `"crypto.verify" Button`
+    t =    17.31s Find the "crypto.verify" Button
+    t =    17.34s Tap "crypto.verify" Button
+    t =    17.34s     Wait for personal-learning.Chat to idle
+    t =    17.37s     Find the "crypto.verify" Button
+    t =    17.42s     Check for interrupting elements affecting "crypto.verify" Button
+    t =    17.47s     Synthesize event
+    t =    17.77s     Wait for personal-learning.Chat to idle
+    t =    18.04s Find the "crypto.establish" Button
+    t =    18.13s Waiting 3.0s for "crypto.establish" Button to exist
+    t =    19.42s     Checking `Expect predicate `existsNoRetry == 1` for object "crypto.establish" Button`
+    t =    19.42s         Checking existence of `"crypto.establish" Button`
+    t =    19.45s Find the "crypto.establish" Button
+    t =    19.51s Tap "crypto.establish" Button
+    t =    19.51s     Wait for personal-learning.Chat to idle
+    t =    19.53s     Find the "crypto.establish" Button
+    t =    19.59s     Check for interrupting elements affecting "crypto.establish" Button
+    t =    19.65s     Synthesize event
+    t =    19.98s     Wait for personal-learning.Chat to idle
+    t =    20.24s Find the "crypto.encrypt" Button
+    t =    20.29s Waiting 3.0s for "crypto.encrypt" Button to exist
+    t =    21.32s     Checking `Expect predicate `existsNoRetry == 1` for object "crypto.encrypt" Button`
+    t =    21.32s         Checking existence of `"crypto.encrypt" Button`
+    t =    21.35s Find the "crypto.encrypt" Button
+    t =    21.38s Tap "crypto.encrypt" Button
+    t =    21.38s     Wait for personal-learning.Chat to idle
+    t =    21.38s     Find the "crypto.encrypt" Button
+    t =    21.41s     Check for interrupting elements affecting "crypto.encrypt" Button
+    t =    21.44s     Synthesize event
+    t =    21.74s     Wait for personal-learning.Chat to idle
+    t =    22.00s Find the "crypto.decrypt" Button
+    t =    22.05s Waiting 3.0s for "crypto.decrypt" Button to exist
+    t =    23.09s     Checking `Expect predicate `existsNoRetry == 1` for object "crypto.decrypt" Button`
+    t =    23.09s         Checking existence of `"crypto.decrypt" Button`
+    t =    23.11s Find the "crypto.decrypt" Button
+    t =    23.14s Tap "crypto.decrypt" Button
+    t =    23.14s     Wait for personal-learning.Chat to idle
+    t =    23.14s     Find the "crypto.decrypt" Button
+    t =    23.17s     Check for interrupting elements affecting "crypto.decrypt" Button
+    t =    23.20s     Synthesize event
+    t =    23.49s     Wait for personal-learning.Chat to idle
+    t =    23.75s Find the "A → B · 已验证解密" StaticText
+    t =    23.79s Swipe up Target Application 'personal-learning.Chat'
+    t =    23.79s     Wait for personal-learning.Chat to idle
+    t =    23.80s     Find the Target Application 'personal-learning.Chat'
+    t =    23.81s     Check for interrupting elements affecting "Chat" Application
+    t =    23.84s     Synthesize event
+    t =    24.26s     Wait for personal-learning.Chat to idle
+    t =    26.35s Find the "A → B · 已验证解密" StaticText
+    t =    26.39s Waiting 3.0s for "A → B · 已验证解密" StaticText to exist
+    t =    27.42s     Checking `Expect predicate `existsNoRetry == 1` for object "A → B · 已验证解密" StaticText`
+    t =    27.42s         Checking existence of `"A → B · 已验证解密" StaticText`
+    t =    27.45s Checking existence of `"你好，这是加密测试。" StaticText`
+    t =    27.48s Find the Target Application 'personal-learning.Chat'
+    t =    27.59s Added attachment named 'Local encrypted chat'
+    t =    27.59s Find the "crypto.attack.改密文" Button
+    t =    27.62s Waiting 3.0s for "crypto.attack.改密文" Button to exist
+    t =    28.66s     Checking `Expect predicate `existsNoRetry == 1` for object "crypto.attack.改密文" Button`
+    t =    28.66s         Checking existence of `"crypto.attack.改密文" Button`
+    t =    28.69s Find the "crypto.attack.改密文" Button
+    t =    28.72s Tap "crypto.attack.改密文" Button
+    t =    28.72s     Wait for personal-learning.Chat to idle
+    t =    28.72s     Find the "crypto.attack.改密文" Button
+    t =    28.75s     Check for interrupting elements affecting "crypto.attack.改密文" Button
+    t =    28.78s     Synthesize event
+    t =    29.07s     Wait for personal-learning.Chat to idle
+    t =    29.32s Get number of matches for: Elements matching predicate '"A → B · 已验证解密" IN identifiers'
+    t =    29.35s Checking existence of `"此测试正文不得显示" StaticText`
+    t =    29.38s Tear Down
+Test Case '-[ChatUITests.CryptoLabUITests testOfflineEncryptionButtonsAndChatBubble]' passed (29.688 seconds).
+Test Suite 'CryptoLabUITests' passed at 2026-10-07 17:11:41.306.
+	 Executed 1 test, with 0 failures (0 unexpected) in 29.688 (29.690) seconds
+Test Suite 'ChatUITests.xctest' passed at 2026-10-07 17:11:41.306.
+	 Executed 1 test, with 0 failures (0 unexpected) in 29.688 (29.690) seconds
+Test Suite 'Selected tests' passed at 2026-10-07 17:11:41.306.
+	 Executed 1 test, with 0 failures (0 unexpected) in 29.688 (29.692) seconds

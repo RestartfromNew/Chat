@@ -12,6 +12,7 @@ struct LoginResponse: Codable, Sendable {
     let displayName: String
     let accessToken: String
     let refreshToken: String
+    var deviceStatus: String? = nil
     var user: ChatUser { ChatUser(id: id, username: username, displayName: displayName) }
 }
 
@@ -67,7 +68,7 @@ enum JSONCodec {
 
 struct ServerConfiguration: Codable, Equatable, Sendable {
     var baseURL: String = "https://aittelegramapi.uk"
-    var webSocketPath: String = "/ws"
+    var webSocketPath: String = "/"
     // Only switch these after the backend actually supports POST.
     var legacyGETBodies: Bool = true
 
@@ -89,5 +90,15 @@ struct ServerConfiguration: Codable, Equatable, Sendable {
         parts.path = webSocketPath
         guard let url = parts.url else { throw ClientError(message: "WebSocket 地址无效。") }
         return url
+    }
+}
+
+extension ServerConfiguration {
+    var migratedWebSocket: Self {
+        var value = self
+        if (try? validatedURL().host?.lowercased()) == "aittelegramapi.uk", ["/ws", "/websocket-test"].contains(webSocketPath) {
+            value.webSocketPath = "/"
+        }
+        return value
     }
 }

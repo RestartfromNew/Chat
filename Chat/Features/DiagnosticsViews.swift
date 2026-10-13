@@ -10,22 +10,22 @@ struct SocketTestView: View {
     var body: some View {
         List {
             Section {
+                if let detail = console.lastError { NoticeView(text: detail) }
+                if let url = try? app.configuration.socketURL() {
+                    Text(url.absoluteString).font(.caption.monospaced()).textSelection(.enabled)
+                }
                 Label(console.state.rawValue, systemImage: console.state == .connected ? "wifi" : "wifi.slash")
                 Text("明文调试通道，仅测试握手、心跳和服务端响应。success 不代表好友收到消息。")
                     .font(.footnote).foregroundStyle(.secondary)
                 if console.state == .disconnected {
                     Button("连接 WebSocket") {
-                        do {
-                            guard let token = app.login?.accessToken else { return }
-                            error = nil
-                            try console.connect(configuration: app.configuration, token: token)
-                        } catch { self.error = error.localizedDescription }
-                    }
+                        Task { await run { try await app.connectWebSocket() } }
+                    }.disabled(busy)
                 } else { Button("断开连接") { console.disconnect() } }
             }
             Section("发送测试帧") {
                 TextField("测试内容（请勿填写隐私信息）", text: $message, axis: .vertical).lineLimit(2...5)
-                Button("发送 chat.newTextMessage") { Task { await run { try await console.sendTest(message: message, id: UUID()) } } }
+                Button("发送 \(WebSocketTestFrame.type)") { Task { await run { try await app.sendSocketTest(message: message) } } }
                     .disabled(console.state != .connected || busy || message.isEmpty)
                 Button("测试 Ping / Pong") { Task { await run { try await console.ping() } } }
                     .disabled(console.state != .connected || busy)
@@ -62,26 +62,17 @@ struct AccountView: View {
             if let session = app.login {
                 Section {
                     PersonRow(name: session.displayName, username: session.username)
-                    Text(session.id.uuidString.lowercased()).font(.caption.monospaced()).textSelection(.enabled)
                 }
             }
-            Section("会话测试") {
-                Button("验证当前 Access Token") { Task { await run {
-                    // Deliberately no auto-refresh: this button tests the CURRENT token.
-                    if let token = app.login?.accessToken { try await app.auth.verify(token: token) }
-                    notice = "当前 Access Token 验证通过（兼容空响应体）。"
-                } } }
-                Button("手动刷新 Token") { Task { await run {
-                    try await app.refreshAccessToken(); notice = "Token 已刷新并写入 Keychain。"
-                } } }
-                if busy { ProgressView() }
-                if let error { NoticeView(text: error) }
-                if let notice { NoticeView(text: notice, isError: false) }
+            Section {
+                NavigationLink("本机设备与密钥") { DeviceSetupView() }
+                NavigationLink("开发调试") { ChatDiagnosticsView() }
             }
+            if let error { NoticeView(text: error) }
             Section("服务") {
                 Text(app.configuration.baseURL).font(.footnote)
                 Button("服务器设置") { settings = true }
-                Label("端到端加密：尚未接入", systemImage: "lock.open")
+                Label("聊天：双棘轮加密", systemImage: "lock.shield")
             }
             Section {
                 Button("退出登录", role: .destructive) { confirmLogout = true }

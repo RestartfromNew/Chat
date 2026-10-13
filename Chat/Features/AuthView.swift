@@ -59,6 +59,7 @@ struct AuthView: View {
             Section {
                 Label(app.configuration.baseURL, systemImage: "server.rack").font(.footnote)
                 Button("服务器设置") { settings = true }
+                NavigationLink("本地加密实验（无需登录）") { CryptoLabView() }
             } footer: {
                 Text("聊天加密尚未接入。连接测试是独立的明文调试工具。")
             }

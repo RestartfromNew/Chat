@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		D81000000000000000000001 /* CXEdDSA in Frameworks */ = {isa = PBXBuildFile; productRef = D81000000000000000000002 /* CXEdDSA */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		373C231530743FF30090A41F /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -52,6 +56,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D81000000000000000000001 /* CXEdDSA in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +117,7 @@
 			);
 			name = Chat;
 			packageProductDependencies = (
+				D81000000000000000000002 /* CXEdDSA */,
 			);
 			productName = Chat;
 			productReference = 373C230730743FF30090A41F /* Chat.app */;
@@ -195,6 +201,9 @@
 			);
 			mainGroup = 373C22FE30743FF30090A41F;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				D81000000000000000000003 /* XCLocalSwiftPackageReference "Vendor/XEdDSA" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 373C230830743FF30090A41F /* Products */;
 			projectDirPath = "";
@@ -558,6 +567,20 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		D81000000000000000000003 /* XCLocalSwiftPackageReference "Vendor/XEdDSA" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Vendor/XEdDSA;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		D81000000000000000000002 /* CXEdDSA */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = CXEdDSA;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 373C22FF30743FF30090A41F /* Project object */;
 }

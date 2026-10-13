@@ -8,10 +8,12 @@ protocol CredentialStore {
 }
 
 struct KeychainStore: CredentialStore {
-    private let service = "personal-learning.Chat.session.v1"
+    private let service: String
+    private let account: String
+    init(service: String = "personal-learning.Chat.session.v1", account: String = "active-session") { self.service = service; self.account = account }
     private var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: service, kSecAttrAccount as String: "active-session"]
+         kSecAttrService as String: service, kSecAttrAccount as String: account]
     }
     func read() throws -> Data? {
         var request = query

@@ -49,7 +49,8 @@ struct ChatTests {
         config.legacyGETBodies = false
         api = APIClient(configuration: config, transport: standard, legacyTransport: legacy)
         _ = try await RemoteFriendsRepository(api: api).search(username: "alice", token: "test-token")
-        #expect(await standard.last?.httpMethod == "POST")
+        #expect(await legacy.last?.httpMethod == "POST")
+        #expect(await standard.count == 0)
     }
     @Test func processUsesRequestIDAndExactAction() async throws {
         let transport = StubTransport(json: "{}")
@@ -65,7 +66,7 @@ struct ChatTests {
         let transport = StubTransport(status: 409, json: #"{"error":{"code":"request_already_exists","message":"Already pending"}}"#)
         let api = APIClient(configuration: ServerConfiguration(), transport: transport, legacyTransport: transport)
         do {
-            _ = try await api.request(path: "request_friendship", method: "POST")
+            _ = try await api.request(path: "request_friendship", method: "POST", token: "synthetic-token")
             Issue.record("Expected error")
         } catch let error as APIError {
             #expect(error.status == 409); #expect(error.code == "request_already_exists")
@@ -102,7 +103,7 @@ struct ChatTests {
             var config = ServerConfiguration(); config.baseURL = input
             #expect(throws: (any Error).self) { try config.validatedURL() }
         }
-        #expect(try ServerConfiguration().socketURL().absoluteString == "wss://aittelegramapi.uk/ws")
+        #expect(try ServerConfiguration().socketURL().absoluteString == "wss://aittelegramapi.uk/")
     }
     @Test func encryptionNeverFallsBackToPlaintext() async throws {
         await #expect(throws: ClientError.self) {
@@ -197,5 +198,51 @@ struct SessionTests {
         var config = model.configuration; config.baseURL = "https://example.com"
         try model.saveConfiguration(config)
         #expect(model.login == nil); #expect(store.data == nil)
+    }
+}
+
+
+struct AuthorizationRegressionTests {
+    @Test func foundationCanonicalizesButWireIsLowercase() throws {
+        var request = URLRequest(url: URL(string: "https://example.com/verify_access_token")!)
+        request.httpMethod = "POST"
+        try AccessTokenHeader.apply("synthetic-token", to: &request)
+        let bytes = try HTTP1RequestEncoder.encode(request)
+        let wire = String(decoding: bytes, as: UTF8.self)
+        #expect(wire.hasPrefix("POST /verify_access_token HTTP/1.1\r\n"))
+        #expect(wire.contains("\r\nauthorization: Bearer synthetic-token\r\n"))
+        #expect(!wire.contains("\r\nAuthorization:"))
+        #expect(wire.contains("Content-Length: 0\r\n"))
+    }
+    @Test func protectedRequestsNeverGoOutWithoutToken() async throws {
+        let transport = StubTransport()
+        let api = APIClient(configuration: ServerConfiguration(), transport: transport, legacyTransport: transport)
+        await #expect(throws: ClientError.self) { try await api.request(path: "fetch_friends") }
+        #expect(await transport.count == 0)
+    }
+    @Test func publicLoginDoesNotCarryBearer() async throws {
+        let transport = StubTransport(json: #"{"id":"11111111-1111-1111-1111-111111111111","username":"alice","display_name":"Alice","access_token":"test","refresh_token":"refresh"}"#)
+        let api = APIClient(configuration: ServerConfiguration(), transport: transport, legacyTransport: transport)
+        _ = try await RemoteAuthRepository(api: api).login(email: "a@example.com", password: "synthetic")
+        #expect(await transport.last?.value(forHTTPHeaderField: "Authorization") == nil)
+    }
+    @Test func websocketHandshakeRequiresBearer() throws {
+        let request = try AccessTokenHeader.webSocketRequest(configuration: ServerConfiguration(), token: "synthetic-token")
+        #expect(request.value(forHTTPHeaderField: "authorization") == "Bearer synthetic-token")
+        #expect(request.url?.scheme == "wss")
+        #expect(request.url?.query == nil)
+        #expect(throws: ClientError.self) { try AccessTokenHeader.webSocketRequest(configuration: ServerConfiguration(), token: "") }
+        #expect(throws: ClientError.self) { try AccessTokenHeader.webSocketRequest(configuration: ServerConfiguration(), token: "bad\r\nheader") }
+    }
+    @Test func postWireRetainsJSONAndUTF8Length() throws {
+        var request = URLRequest(url: URL(string: "https://example.com/request_friendship")!)
+        request.httpMethod = "POST"
+        request.httpBody = Data(#"{"message":"你好"}"#.utf8)
+        try AccessTokenHeader.apply("synthetic", to: &request)
+        let bytes = try HTTP1RequestEncoder.encode(request)
+        let wire = String(decoding: bytes, as: UTF8.self)
+        #expect(wire.hasPrefix("POST /request_friendship HTTP/1.1"))
+        #expect(wire.contains("Content-Length: \(request.httpBody!.count)\r\n"))
+        #expect(bytes.suffix(request.httpBody!.count) == request.httpBody)
     }
 }

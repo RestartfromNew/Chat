@@ -1,0 +1,33 @@
+--- a/src/http/AuthMiddleWare.cpp
++++ b/src/http/AuthMiddleWare.cpp
+@@ -3,12 +3,26 @@
+ //
+ 
+ #include "http/AuthMiddleWare.h"
++#include <algorithm>
++#include <cctype>
++#include <string_view>
+ AuthMiddleWare::AuthMiddleWare(AccessTokenService &accessTokenService):accessTokenService_(accessTokenService) {}
+ AuthResult AuthMiddleWare::authenticate(const HttpRequest &request)const{
+-    const auto iterator =request.headers.find("authorization");
+-    if (iterator == request.headers.end())
+-        return AuthResult{AuthError::UnAuthorized};
+-    const std::string& authorization = iterator->second;
++    const std::string* value = nullptr;
++    constexpr std::string_view expected = "authorization";
++    for (const auto& [name, headerValue] : request.headers) {
++        if (name.size() != expected.size()) continue;
++        const bool matches = std::equal(name.begin(), name.end(), expected.begin(),
++            [](unsigned char left, unsigned char right) {
++                return std::tolower(left) == std::tolower(right);
++            });
++        if (!matches) continue;
++        // Reject differently-cased duplicate auth fields rather than choosing one.
++        if (value != nullptr) return AuthResult{AuthError::UnAuthorized};
++        value = &headerValue;
++    }
++    if (value == nullptr) return AuthResult{AuthError::UnAuthorized};
++    const std::string& authorization = *value;
+     // 先用简单写法检查固定前缀。
+     const std::string prefix = "Bearer ";
+     if (!authorization.starts_with(prefix))

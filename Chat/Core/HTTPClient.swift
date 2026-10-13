@@ -27,23 +27,50 @@ final class URLSessionTransport: NSObject, HTTPTransport, URLSessionTaskDelegate
                     completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }
 
+enum AuthenticationPolicy: Sendable { case required, none }
+
+enum AccessTokenHeader {
+    static func apply(_ token: String?, to request: inout URLRequest) throws {
+        guard let token, !token.isEmpty,
+              token.utf8.allSatisfy({ $0 > 32 && $0 < 127 }) else {
+            throw ClientError(message: "缺少有效的 Access Token，请重新登录。")
+        }
+        // Foundation canonicalizes this to Authorization. Raw HTTP compatibility
+        // must serialize the field as lowercase for the current C++ backend.
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    }
+
+    static func webSocketRequest(configuration: ServerConfiguration, token: String) throws -> URLRequest {
+        var request = URLRequest(url: try configuration.socketURL())
+        request.httpMethod = "GET"
+        request.setValue("0", forHTTPHeaderField: "Content-Length") // Empty Upgrade request, matching the backend probe.
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        // URLSessionWebSocketTask supplies Upgrade/Connection/Sec-WebSocket-* headers.
+        try apply(token, to: &request)
+        request.timeoutInterval = 20
+        return request
+    }
+}
+
 struct APIClient: Sendable {
     let configuration: ServerConfiguration
     var transport: any HTTPTransport = URLSessionTransport.shared
-    var legacyTransport: any HTTPTransport = LegacyGETTransport()
+    var legacyTransport: any HTTPTransport = HTTP1CompatibilityTransport()
 
     func request(path: String, method: String = "GET", body: [String: String]? = nil,
-                 token: String? = nil) async throws -> Data {
+                 encodedBody: Data? = nil, token: String? = nil, authentication: AuthenticationPolicy = .required) async throws -> Data {
         let url = try configuration.validatedURL().appendingPathComponent(path)
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let body {
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        request.httpBody = try encodedBody ?? body.map { try JSONSerialization.data(withJSONObject: $0) }
+        if request.httpBody != nil {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "authorization") }
-        let sender = method == "GET" && body != nil ? legacyTransport : transport
+        if authentication == .required { try AccessTokenHeader.apply(token, to: &request) }
+        // Work around the backend's case-sensitive header lookup. No automatic
+        // retry of a mutation: choose the compatible transport before sending.
+        let sender = authentication == .required || (method == "GET" && request.httpBody != nil) ? legacyTransport : transport
         let result = try await sender.send(request)
         guard (200..<300).contains(result.status) else {
             struct ErrorBody: Decodable { struct Detail: Decodable { let code: String; let message: String }; let error: Detail }
@@ -54,9 +81,15 @@ struct APIClient: Sendable {
         return result.data
     }
 
+    func post<T: Decodable, B: Encodable>(_ type: T.Type, path: String, body: B, token: String) async throws -> T {
+        let data = try await request(path: path, method: "POST", encodedBody: JSONEncoder().encode(body), token: token)
+        return try JSONCodec.decoder().decode(type, from: data)
+    }
+
     func decode<T: Decodable>(_ type: T.Type, path: String, method: String = "GET",
-                             body: [String: String]? = nil, token: String? = nil) async throws -> T {
-        let data = try await request(path: path, method: method, body: body, token: token)
+                             body: [String: String]? = nil, token: String? = nil,
+                             authentication: AuthenticationPolicy = .required) async throws -> T {
+        let data = try await request(path: path, method: method, body: body, token: token, authentication: authentication)
         do { return try JSONCodec.decoder().decode(type, from: data) }
         catch { throw ClientError(message: "服务器响应格式不符合接口约定（\(path)）。") }
     }

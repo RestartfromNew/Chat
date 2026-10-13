@@ -32,7 +32,7 @@ struct FriendsView: View {
                 ContentUnavailableView("还没有好友", systemImage: "person.2", description: Text("点击右上角 +，通过用户名发送申请。"))
             }
             ForEach(filtered) { user in
-                NavigationLink { FriendDetailView(user: user) } label: { PersonRow(name: user.displayName, username: user.username) }
+                NavigationLink { ConversationView(friend: user, model: app.chats, store: app.chats.store) } label: { PersonRow(name: user.displayName, username: user.username) }
             }
         }
         .navigationTitle("好友")
@@ -51,10 +51,10 @@ struct FriendDetailView: View {
     var body: some View {
         Form {
             Section { PersonRow(name: user.displayName, username: user.username) }
+            Section { NavigationLink("设备与会话准备") { FriendDevicesView(friend: user) } }
             Section("用户 ID") { Text(user.id.uuidString.lowercased()).font(.caption.monospaced()).textSelection(.enabled) }
             Section {
-                Label("聊天功能等待接入", systemImage: "lock.bubble")
-                Text("后端补齐密文转发与设备密钥接口后，可在此开启会话。目前不会向好友发送明文聊天消息。")
+                Text("聊天消息加密后发给好友的有效设备。已存储不代表对方已读；下拉聊天页可拉取新消息。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }.navigationTitle("好友资料")

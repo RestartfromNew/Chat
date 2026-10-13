@@ -1,19 +1,19 @@
 import Foundation
 import Network
 
-/// Compatibility adapter for the existing GET-with-JSON-body endpoints.
-/// URLSession rejects GET bodies. Network.framework sends HTTP/1.1 over verified TLS.
-/// Isolated so this file can be removed once both endpoints support POST.
-struct LegacyGETTransport: HTTPTransport {
+/// Compatibility adapter for GET JSON bodies and case-sensitive auth headers.
+/// Network.framework sends HTTP/1.1 over system-verified TLS, with lowercase
+/// authorization on the wire. Remove once backend headers and GET routes are fixed.
+struct HTTP1CompatibilityTransport: HTTPTransport {
     func send(_ request: URLRequest) async throws -> HTTPResult {
-        let operation = LegacyGETOperation()
+        let operation = HTTP1CompatibilityOperation()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { operation.start(request, continuation: $0) }
         } onCancel: { operation.cancel() }
     }
 }
 
-private final class LegacyGETOperation: @unchecked Sendable {
+private final class HTTP1CompatibilityOperation: @unchecked Sendable {
     private let queue = DispatchQueue(label: "chat.legacy-http")
     private var connection: NWConnection?
     private var continuation: CheckedContinuation<HTTPResult, Error>?
@@ -27,7 +27,7 @@ private final class LegacyGETOperation: @unchecked Sendable {
             if self.cancelled { self.finish(.failure(CancellationError())); return }
             guard let url = request.url, url.scheme == "https", let host = url.host,
                   let port = NWEndpoint.Port(rawValue: UInt16(exactly: url.port ?? 443) ?? 0),
-                  port.rawValue > 0, request.httpMethod == "GET" else {
+                  port.rawValue > 0, ["GET", "POST"].contains(request.httpMethod ?? "") else {
                 self.finish(.failure(URLError(.badURL))); return
             }
             let connection = NWConnection(host: NWEndpoint.Host(host), port: port, using: .tls)
@@ -40,7 +40,7 @@ private final class LegacyGETOperation: @unchecked Sendable {
                 switch state {
                 case .ready:
                     do {
-                        let wire = try Self.encode(request)
+                        let wire = try HTTP1RequestEncoder.encode(request)
                         connection.send(content: wire, completion: .contentProcessed { [weak self] error in
                             if let error { self?.finish(.failure(error)) }
                             else { self?.receive() }
@@ -81,9 +81,13 @@ private final class LegacyGETOperation: @unchecked Sendable {
         connection?.cancel(); connection = nil
         continuation.resume(with: result)
     }
+}
+
+enum HTTP1RequestEncoder {
     static func encode(_ request: URLRequest) throws -> Data {
         guard let url = request.url, let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let host = parts.host else { throw URLError(.badURL) }
+              let host = parts.host, parts.query == nil, parts.fragment == nil,
+              let method = request.httpMethod, ["GET", "POST"].contains(method) else { throw URLError(.badURL) }
         let authority = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
         let hostHeader = authority + (parts.port.map { ":\($0)" } ?? "")
         let path = parts.percentEncodedPath.isEmpty ? "/" : parts.percentEncodedPath
@@ -92,7 +96,7 @@ private final class LegacyGETOperation: @unchecked Sendable {
                        "Content-Length": String(request.httpBody?.count ?? 0)]
         if let token = request.value(forHTTPHeaderField: "authorization") { headers["authorization"] = token }
         guard headers.values.allSatisfy({ !$0.contains("\r") && !$0.contains("\n") }) else { throw URLError(.badURL) }
-        var output = Data(("GET \(path) HTTP/1.1\r\n" + headers.sorted { $0.key < $1.key }
+        var output = Data(("\(method) \(path) HTTP/1.1\r\n" + headers.sorted { $0.key < $1.key }
             .map { "\($0.key): \($0.value)\r\n" }.joined() + "\r\n").utf8)
         output.append(request.httpBody ?? Data())
         return output
