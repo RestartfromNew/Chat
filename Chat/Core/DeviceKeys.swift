@@ -110,6 +110,7 @@ final class DeviceKeyVault {
     func save(_ record: LocalDeviceKeys, scope: String) throws {
         var archive = try read(), value = record
         if let old = archive.profiles[scope], old.deviceId != nil, old.deviceId == record.deviceId {
+            if old.phase == .unavailable { value.phase = .unavailable }
             // A delayed upload/claim completion must not resurrect retired bootstrap secrets.
             let retired = (old.retiredClaimDevices ?? []).union(record.retiredClaimDevices ?? [])
             if !retired.isEmpty { value.retiredClaimDevices = retired }
@@ -127,6 +128,24 @@ final class DeviceKeyVault {
     private func loginKey(server: ServerConfiguration, email: String) throws -> String {
         let data = Data((try server.validatedURL().absoluteString.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "|" + email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()).utf8)
         return DeviceKeyCrypto.hex(Data(SHA256.hash(data: data)))
+    }
+    func loginScope(server: ServerConfiguration, email: String) throws -> String? {
+        try read().loginIndex[loginKey(server: server, email: email)]
+    }
+    func pendingLoginScope(server: ServerConfiguration, email: String) throws -> String {
+        "pending-login|" + (try loginKey(server: server, email: email))
+    }
+    /// Persist the device and email index together before publishing any session.
+    func completeLogin(_ record: LocalDeviceKeys, server: ServerConfiguration, email: String, user: UUID, pending: String?) throws {
+        var archive = try read()
+        let scope = try Self.scope(server: server, user: user)
+        if let previous = archive.profiles[scope], previous.deviceId != nil, previous.deviceId != record.deviceId {
+            throw ClientError(message: "本机已有另一设备的密钥，已停止覆盖。请核实设备记录。")
+        }
+        archive.profiles[scope] = record
+        archive.loginIndex[try loginKey(server: server, email: email)] = scope
+        if let pending { archive.profiles.removeValue(forKey: pending) }
+        try save(archive)
     }
     func loginDevice(server: ServerConfiguration, email: String) throws -> UUID? {
         let archive = try read()

@@ -9,6 +9,8 @@ struct StoredMessageReceipt: Codable, Equatable {
 struct SocketBusinessError: LocalizedError {
     let code: String
     var errorDescription: String? { "WebSocket 业务错误：\(code)" }
+    var isTransient: Bool { ["database_unavailable", "retry_later", "server_busy"].contains(code) }
+    var isSessionFailure: Bool { ["accessToken_do_not_match_session", "device_do_not_match_session", "session_device_mismatch"].contains(code) }
     var isAuthentication: Bool { ["missing_authorization", "invalid_access_token", "access_token_expired"].contains(code) }
 }
 enum StoredMessageProtocol {
@@ -98,7 +100,7 @@ final class WebSocketBusinessRequest {
         } catch {
             finish(.failure(error))
             if let error = error as? SocketBusinessError,
-               !["invalid_response", "invalid_sequence"].contains(error.code) { return }
+               !error.isSessionFailure, !["invalid_response", "invalid_sequence"].contains(error.code) { return }
             pending.invalidate()
         }
     }

@@ -22,33 +22,45 @@ struct FriendDevice: Codable, Identifiable {
     let status: String
     let identityPublicKeyHex: String
     let protocolSuite: String
+    var userId: UUID? = nil
+    var isOwnDevice: Bool? = nil
     var id: UUID { deviceId }
 }
-struct FriendDevicesResult: Decodable { let friendId: UUID; let devices: [FriendDevice] }
+struct FriendDevicesResult: Decodable {
+    let friendId: UUID
+    let devices: [FriendDevice]
+    var targetUserId: UUID? = nil
+    var isOwnDevice: Bool? = nil
+    func validate(target: UUID, actor: UUID) throws {
+        guard friendId == target, targetUserId == nil || targetUserId == target,
+              isOwnDevice == nil || isOwnDevice == (target == actor),
+              Set(devices.map(\.id)).count == devices.count,
+              devices.allSatisfy({ $0.status == "active" && ($0.userId == nil || $0.userId == target) &&
+                  ($0.isOwnDevice == nil || $0.isOwnDevice == (target == actor)) }) else {
+            throw ClientError(message: "设备目录归属或状态不匹配。")
+        }
+    }
+}
 struct ClaimedPrekey: Codable { let friendId: UUID; let deviceId: UUID; let prekeyId: Int; let publicKeyHex: String }
 
 protocol DeviceRepository {
     func bundle(friend: UUID, device: UUID, token: String) async throws -> DeviceKeyBundleResponse
-    func register(_ body: DeviceRegistrationRequest, token: String) async throws -> RegisteredDevice
     func upload(_ body: PrekeyUploadRequest, token: String) async throws -> PrekeyUploadResult
     func devices(friend: UUID, token: String) async throws -> FriendDevicesResult
     func claim(friend: UUID, device: UUID, token: String) async throws -> ClaimedPrekey
 }
 struct RemoteDeviceRepository: DeviceRepository {
     let api: APIClient
-    func register(_ body: DeviceRegistrationRequest, token: String) async throws -> RegisteredDevice {
-        try await api.post(RegisteredDevice.self, path: "register_device", body: body, token: token)
-    }
     func upload(_ body: PrekeyUploadRequest, token: String) async throws -> PrekeyUploadResult {
         try await api.post(PrekeyUploadResult.self, path: "upload_one_time_prekeys", body: body, token: token)
     }
     func devices(friend: UUID, token: String) async throws -> FriendDevicesResult {
-        try await api.decode(FriendDevicesResult.self, path: "friend_devices", method: "POST",
-                             body: ["friend_id": friend.uuidString.lowercased()], token: token)
+        try await api.decode(FriendDevicesResult.self, path: "user_devices", method: "POST",
+                             body: ["target_user_id": friend.uuidString.lowercased()], token: token)
     }
     func claim(friend: UUID, device: UUID, token: String) async throws -> ClaimedPrekey {
         try await api.decode(ClaimedPrekey.self, path: "get_one_time_prekey", method: "POST",
-            body: ["friend_id": friend.uuidString.lowercased(), "device_id": device.uuidString.lowercased()], token: token)
+            body: ["target_user_id": friend.uuidString.lowercased(), "device_id": device.uuidString.lowercased()], token: token)
     }
 }
 
@@ -82,6 +94,28 @@ struct DeviceKeyBundleResponse: Decodable {
 extension RemoteDeviceRepository {
     func bundle(friend: UUID, device: UUID, token: String) async throws -> DeviceKeyBundleResponse {
         try await api.decode(DeviceKeyBundleResponse.self, path: "get_device_key_bundle", method: "POST",
-            body: ["friend_id": friend.uuidString.lowercased(), "device_id": device.uuidString.lowercased()], token: token)
+            body: ["target_user_id": friend.uuidString.lowercased(), "device_id": device.uuidString.lowercased()], token: token)
+    }
+}
+
+struct DeviceRevocation: Decodable {
+    let deviceId: UUID
+    let status: String
+    let alreadyRevoked: Bool
+    let websocketClosed: Bool
+    func validate(device: UUID) throws {
+        guard deviceId == device, status == "revoked" else { throw ClientError(message: "撤销响应与目标设备不匹配。") }
+    }
+}
+extension RemoteDeviceRepository {
+    func ownDevices(token: String) async throws -> FriendDevicesResult {
+        try await api.decode(FriendDevicesResult.self, path: "user_devices", method: "POST", body: [:], token: token)
+    }
+    func revoke(device: UUID, password: String, token: String) async throws -> DeviceRevocation {
+        guard !password.isEmpty else { throw ClientError(message: "请输入当前密码。") }
+        let result = try await api.decode(DeviceRevocation.self, path: "revoke_device", method: "POST",
+            body: ["deviceID": device.uuidString.lowercased(), "password": password], token: token)
+        try result.validate(device: device)
+        return result
     }
 }

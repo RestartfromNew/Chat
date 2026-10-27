@@ -4,6 +4,28 @@ final class ChatUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     @MainActor
+    func testEnglishAndInAppLanguageSwitch() throws {
+        let app = XCUIApplication()
+        app.launch()
+        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 10))
+        app.swipeUp()
+        let picker = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Language")).firstMatch
+        XCTAssertTrue(picker.waitForExistence(timeout: 3))
+        picker.tap(); app.buttons["English"].tap()
+        app.swipeDown()
+        XCTAssertTrue(app.staticTexts["Start with hello"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textFields["Email"].exists)
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.staticTexts["Start with hello"].waitForExistence(timeout: 10))
+        app.swipeUp()
+        picker.tap(); app.buttons["简体中文"].tap()
+        app.swipeDown()
+        XCTAssertTrue(app.staticTexts["从一句你好开始"].waitForExistence(timeout: 5))
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "Chinese after language switch"; shot.lifetime = .keepAlways; add(shot)
+    }
+
+    @MainActor
     func testRegistrationFieldsAndServerValidation() throws {
         let app = XCUIApplication()
         app.launch()

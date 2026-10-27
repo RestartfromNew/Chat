@@ -9,6 +9,9 @@ struct SocketEvent: Identifiable {
 
 @MainActor
 final class SocketConsole: ObservableObject, EncryptedSocketTransport {
+    let friendRequestEvents = PassthroughSubject<[FriendRequest], Never>()
+    let onlineEnvelopes = PassthroughSubject<IncomingEnvelope, Never>()
+    private(set) var connectedDeviceID: UUID?
     let incomingFrames = PassthroughSubject<Data, Never>()
     enum State: String { case disconnected = "未连接", connecting = "等待 HTTP Upgrade", connected = "已连接" }
     @Published private(set) var state: State = .disconnected
@@ -20,18 +23,24 @@ final class SocketConsole: ObservableObject, EncryptedSocketTransport {
     private var generation = UUID()
     private var secrets: [String] = []
 
-    func connect(configuration: ServerConfiguration, token: String) async throws {
+    func connect(configuration: ServerConfiguration, token: String, deviceID: UUID, onRevoked: @escaping (UUID) -> Void = { _ in }) async throws {
         disconnect(); lastError = nil
-        let request = try AccessTokenHeader.webSocketRequest(configuration: configuration, token: token)
+        let request = try AccessTokenHeader.webSocketRequest(configuration: configuration, token: token, deviceID: deviceID)
         secrets = [token]
         let connection = WebSocketConnection()
         self.connection = connection
         let current = generation
+        connection.onDeviceRevoked = { [weak self] in
+            guard let self, self.generation == current else { return }
+            onRevoked(deviceID)
+            if self.generation == current { self.disconnect() }
+        }
         state = .connecting
-        append("发送带鉴权的 HTTP Upgrade：\(request.url?.absoluteString ?? "")")
+        append("发送带鉴权的 HTTP Upgrade：\(request.url?.absoluteString ?? "")；deviceID=\(deviceID.uuidString.lowercased())")
         do {
             try await connection.open(request)
             guard generation == current else { throw CancellationError() }
+            connectedDeviceID = deviceID
             state = .connected
             append("WebSocket 握手完成：HTTP 101；可发送消息或测试 Ping。握手已鉴权；每条业务帧仍携带 Token。")
             receiver = Task { [weak self] in
@@ -41,12 +50,10 @@ final class SocketConsole: ObservableObject, EncryptedSocketTransport {
                         guard let self, self.generation == current else { return }
                         switch message {
                         case .string(let text):
-                            self.business.receive(Data(text.utf8))
-                            self.incomingFrames.send(Data(text.utf8))
+                            self.route(Data(text.utf8))
                             self.append("收到文本帧：\(text.utf8.count) 字节")
                         case .data(let data):
-                            self.business.receive(data)
-                            self.incomingFrames.send(data)
+                            self.route(data)
                             self.append("收到二进制帧：\(data.count) 字节")
                         @unknown default: break
                         }
@@ -61,6 +68,24 @@ final class SocketConsole: ObservableObject, EncryptedSocketTransport {
             fail(error, connection: connection, wasConnected: false)
             throw WebSocketHandshakeError(status: connection.httpStatus, detail: lastError ?? error.localizedDescription)
         }
+    }
+    private func route(_ data: Data) {
+        // Route notifications before the single-flight business response matcher.
+        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        switch object?["type"] as? String {
+        case "Online_Sync":
+            do {
+                guard let device = connectedDeviceID else { throw ClientError(message: "连接未绑定接收设备。") }
+                onlineEnvelopes.send(try OnlineEnvelope.decode(data, device: device))
+            } catch { append("在线推送被拒绝：" + error.localizedDescription) }
+        case "friend.request.received":
+            do {
+                guard connectedDeviceID != nil else { throw ClientError(message: "连接未绑定接收设备。") }
+                friendRequestEvents.send(try FriendRequestPush.decode(data))
+            } catch { append("好友申请推送被拒绝：" + error.localizedDescription) }
+        default: business.receive(data)
+        }
+        incomingFrames.send(data)
     }
     private func fail(_ error: Error, connection: WebSocketConnection, wasConnected: Bool) {
         let detail = WebSocketDiagnostics.failure(error, status: connection.httpStatus, wasConnected: wasConnected)
@@ -104,6 +129,8 @@ final class SocketConsole: ObservableObject, EncryptedSocketTransport {
         business.cancel()
         receiver?.cancel(); receiver = nil
         connection?.close(); connection = nil
+        connectedDeviceID = nil
+        secrets = []
         state = .disconnected
     }
     func clear() { events = []; lastError = nil }

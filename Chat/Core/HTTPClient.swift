@@ -40,9 +40,10 @@ enum AccessTokenHeader {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     }
 
-    static func webSocketRequest(configuration: ServerConfiguration, token: String) throws -> URLRequest {
+    static func webSocketRequest(configuration: ServerConfiguration, token: String, deviceID: UUID) throws -> URLRequest {
         var request = URLRequest(url: try configuration.socketURL())
         request.httpMethod = "GET"
+        request.setValue(deviceID.uuidString.lowercased(), forHTTPHeaderField: "deviceID")
         request.setValue("0", forHTTPHeaderField: "Content-Length") // Empty Upgrade request, matching the backend probe.
         request.cachePolicy = .reloadIgnoringLocalCacheData
         // URLSessionWebSocketTask supplies Upgrade/Connection/Sec-WebSocket-* headers.

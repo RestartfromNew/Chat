@@ -13,6 +13,7 @@ struct LoginResponse: Codable, Sendable {
     let accessToken: String
     let refreshToken: String
     var deviceStatus: String? = nil
+    var deviceId: UUID? = nil
     var user: ChatUser { ChatUser(id: id, username: username, displayName: displayName) }
 }
 

@@ -47,40 +47,71 @@ struct ChatArchive: Codable {
 /// Appropriate for this small client; the persistence boundary can later use an encrypted DB.
 @MainActor final class ChatStore: ObservableObject, DeviceSessionLookup {
     @Published private(set) var archive = ChatArchive()
-    private let storage: any CredentialStore
+    @Published private(set) var readState = ConversationReadState(savedIDs: [], existing: [])
+    @Published var visibleConversation: UUID?
+    private let readDefaults: UserDefaults
+    private let io: ChatArchiveIO
+    private var generation = UUID()
+    private var writing = false
+    private var revision = 0
     private(set) var scope: String?
     private(set) var user: UUID?
     private(set) var device: UUID?
-    init(storage: any CredentialStore = KeychainStore(service: "personal-learning.Chat.ratchet.v1", account: "archive")) {
-        self.storage = storage
+    init(storage: any CredentialStore = KeychainStore(service: "personal-learning.Chat.ratchet.v1", account: "archive"), readDefaults: UserDefaults = .standard) {
+        self.io = ChatArchiveIO(storage: storage)
+        self.readDefaults = readDefaults
     }
-    func reset() { archive = ChatArchive(); scope = nil; user = nil; device = nil }
-    private func load() throws -> [String: ChatArchive] {
-        guard let data = try storage.read() else { return [:] }
-        return try JSONDecoder().decode([String: ChatArchive].self, from: data)
-    }
-    func bind(scope: String, user: UUID, device: UUID) throws {
+    func reset() { visibleConversation = nil; generation = UUID(); revision += 1; writing = false; archive = ChatArchive(); readState = ConversationReadState(savedIDs: [], existing: []); scope = nil; user = nil; device = nil }
+    func bind(scope: String, user: UUID, device: UUID) async throws {
         let key = scope + "|" + user.uuidString + "|" + device.uuidString
         if self.scope == key { return }
-        reset()
-        let value = try load()[key] ?? ChatArchive()
-        self.scope = key; self.user = user; self.device = device; archive = value
+        reset(); let current = generation
+        let value = try await io.read(key)
+        guard current == generation else { throw CancellationError() }
+        self.scope = key; self.user = user; self.device = device
+        let readKey = "chat.read.v1." + key
+        readState = ConversationReadState(savedIDs: readDefaults.stringArray(forKey: readKey), existing: Array(value.messages.values))
+        readDefaults.set(readState.savedIDs, forKey: readKey)
+        archive = value
     }
-    private func commit(_ value: ChatArchive) throws {
-        guard let scope else { throw ClientError(message: "聊天存储尚未绑定账号。") }
-        var values = try load(); values[scope] = value
-        try storage.write(JSONEncoder().encode(values)); archive = value
+    var unreadCounts: [UUID: Int] {
+        readState.unreadCounts(in: Array(archive.messages.values))
     }
-    func remember(user: UUID, devices: [FriendDevice]) throws {
-        var value = archive
-        for device in devices {
-            guard DeviceKeyCrypto.validPublicHex(device.identityPublicKeyHex) else { throw ClientError(message: "好友身份公钥无效。") }
-            if let old = value.peers[device.id], old.user != user || old.identityHex != device.identityPublicKeyHex.lowercased() {
-                throw ClientError(message: "好友设备身份发生变化，已暂停该设备通信，请核实身份。")
+    func markRead(friend: UUID) {
+        guard let scope else { return }
+        var next = readState
+        next.markRead(Array(archive.messages.values), friend: friend)
+        guard next.ids != readState.ids else { return }
+        readDefaults.set(next.savedIDs, forKey: "chat.read.v1." + scope)
+        readState = next
+    }
+    private func commit(_ value: ChatArchive) async throws {
+        guard let scope, !writing else { throw ClientError(message: "聊天存储未就绪或正在写入。") }
+        let current = generation
+        writing = true; defer { if current == generation { writing = false } }
+        try await io.write(value, scope: scope)
+        guard current == generation else { throw CancellationError() }
+        revision += 1; archive = value
+    }
+    func remember(user: UUID, devices: [FriendDevice]) async throws {
+        try await rememberDirectory([(user, devices)])
+    }
+    func rememberDirectory(_ entries: [(UUID, [FriendDevice])]) async throws {
+        var value = archive, changed = false
+        for (user, devices) in entries {
+            for device in devices {
+                guard DeviceKeyCrypto.validPublicHex(device.identityPublicKeyHex) else { throw ClientError(message: "好友身份公钥无效。") }
+                if let old = value.peers[device.id] {
+                    guard old.user == user, old.identityHex == device.identityPublicKeyHex.lowercased() else {
+                        throw ClientError(message: "好友设备身份发生变化，请核实身份。")
+                    }
+                } else {
+                    value.peers[device.id] = ChatPeer(user: user, device: device.id, identityHex: device.identityPublicKeyHex.lowercased())
+                    changed = true
+                }
             }
-            value.peers[device.id] = ChatPeer(user: user, device: device.id, identityHex: device.identityPublicKeyHex.lowercased())
         }
-        try commit(value)
+        if changed { try await commit(value) }
     }
     func hasSession(scope: String, local: UUID, remote: UUID) -> Bool {
         self.device == local && self.scope?.hasPrefix(scope + "|") == true && session(for: remote) != nil
@@ -110,21 +141,22 @@ struct ChatArchive: Codable {
         // after both initial packets arrive; old sessions remain usable for delayed packets.
         archive.sessions.values.filter { $0.peer.device == peer }.sorted { $0.id.uuidString < $1.id.uuidString }.first
     }
-    func prepareMessage(text: String, friend: UUID, targets: [FriendDevice], seeds: [UUID: CachedPrekey], local: LocalDeviceKeys) throws -> UUID {
-        guard let user, let device, device == local.deviceId, !targets.isEmpty, Set(targets.map(\.id)).count == targets.count else {
+    func prepareMessage(text: String, friend: UUID, targets: [FriendDevice], ownTargets: [FriendDevice] = [], seeds: [UUID: CachedPrekey], local: LocalDeviceKeys) async throws -> UUID {
+        guard let user, let device, device == local.deviceId, !targets.isEmpty, Set((targets + ownTargets).map(\.id)).count == targets.count + ownTargets.count else {
             throw ClientError(message: "没有可发送的好友设备。")
         }
         var value = archive
         let id = UUID()
-        for target in targets {
-            guard target.status == "active", target.protocolSuite == DeviceKeyCrypto.suite,
-                  let peer = value.peers[target.id], peer.user == friend else { throw ClientError(message: "目标设备身份不可用。") }
+        for target in targets + ownTargets {
+            let owner = ownTargets.contains(where: { $0.id == target.id }) ? user : friend
+            guard target.id != device, target.status == "active", target.protocolSuite == DeviceKeyCrypto.suite,
+                  let peer = value.peers[target.id], peer.user == owner else { throw ClientError(message: "目标设备身份不可用。") }
             var state: ChatSession
             if let existing = session(for: target.id) { state = existing }
             else {
                 guard value.sessions.count < 1000, let seed = seeds[target.id], seed.phase == .cached, let check = seed.check, let claim = seed.value else { throw ClientError(message: "缺少已验证的首消息密钥。") }
                 try check.bundle.validate(for: target)
-                guard claim.friendId == friend, claim.deviceId == target.id else { throw ClientError(message: "预密钥不属于目标设备。") }
+                guard claim.friendId == owner, claim.deviceId == target.id else { throw ClientError(message: "预密钥不属于目标设备。") }
                 let secret = try PrekeyVerification.derive(identity: local.identityPrivate, ephemeral: check.ephemeralPrivate,
                     remoteIdentity: PrekeyVerification.hex(peer.identityHex, bytes: 32),
                     signedPrekey: PrekeyVerification.hex(check.bundle.signedPrekeyPublicHex, bytes: 32),
@@ -135,15 +167,16 @@ struct ChatArchive: Codable {
                 state = ChatSession(id: UUID(), peer: peer,
                     ratchet: try DoubleRatchet.initiator(secret: secret, remote: PrekeyVerification.hex(check.bundle.signedPrekeyPublicHex, bytes: 32)), bootstrap: bootstrap)
             }
-            let (ratchet, packet) = try DoubleRatchet.seal(text, state: state.ratchet, session: state.id, message: id,
-                sender: user, local: device, friend: friend, remote: target.id, bootstrap: state.bootstrap)
+            let content = owner == user ? try OwnDeviceMessage.encode(text: text, conversation: friend, message: id) : text
+            let (ratchet, packet) = try DoubleRatchet.seal(content, state: state.ratchet, session: state.id, message: id,
+                sender: user, local: device, friend: owner, remote: target.id, bootstrap: state.bootstrap)
             guard packet.count <= 65536 else { throw ClientError(message: "加密包超长。") }
             state.ratchet = ratchet; value.sessions[state.id] = state
             let pending = ChatOutgoing(messageId: id, target: target.id, packet: packet)
             value.outgoing[pending.id] = pending
         }
         value.messages[id] = ChatMessage(id: id, friend: friend, text: text, outgoing: true, date: Date(), status: "待发送")
-        try commit(value) // Advance the ratchet only in the same write as retryable ciphertext.
+        try await commit(value) // Advance the ratchet only in the same write as retryable ciphertext.
         return id
     }
     func outgoingFrame(_ item: ChatOutgoing, token: String) throws -> Data {
@@ -152,22 +185,22 @@ struct ChatArchive: Codable {
             "recipient_device_id": item.target.uuidString.lowercased(), "message_id": item.messageId.uuidString.lowercased(),
             "protocol_version": DoubleRatchet.version, "packet_base64": item.packet.base64EncodedString()])
     }
-    func accepted(_ item: ChatOutgoing, receipt: StoredMessageReceipt) throws {
+    func accepted(_ item: ChatOutgoing, receipt: StoredMessageReceipt) async throws {
         guard receipt.messageId == item.messageId, receipt.seq > 0 else { throw ClientError(message: "发送回执不匹配。") }
         var value = archive; value.outgoing[item.id]?.receipt = receipt; value.outgoing[item.id]?.errorCode = nil
         let complete = value.outgoing.values.filter { $0.messageId == item.messageId }.allSatisfy { $0.receipt != nil }
         value.messages[item.messageId]?.status = complete ? "已存储" : "部分设备已存储"
-        try commit(value) // Never use outgoing seq as an incoming cursor.
+        try await commit(value) // Never use outgoing seq as an incoming cursor.
     }
-    func failed(_ item: ChatOutgoing, error: Error) throws {
+    func failed(_ item: ChatOutgoing, error: Error) async throws {
         var value = archive
         value.outgoing[item.id]?.errorCode = (error as? SocketBusinessError)?.code
         value.messages[item.messageId]?.status = (error as? SocketBusinessError)?.code == "envelope_conflict" ? "密文冲突，已停止重试" : "发送未完成，点按重试"
-        try commit(value)
+        try await commit(value)
     }
-    /// Shared durable intake for sync and a future authenticated push adapter.
+    /// Shared durable intake for sync and authenticated online push.
     /// A push cannot advance sync cursors: an earlier envelope may still be offline.
-    func ingest(_ envelopes: [IncomingEnvelope], advanceCursors: Bool) throws {
+    func ingest(_ envelopes: [IncomingEnvelope], advanceCursors: Bool) async throws {
         guard let device else { throw ClientError(message: "设备未绑定。") }
         var value = archive
         for e in envelopes {
@@ -179,40 +212,52 @@ struct ChatArchive: Codable {
             if advanceCursors { value.cursors[e.senderDeviceId] = max(value.cursors[e.senderDeviceId] ?? 0, e.seq) }
         }
         guard value.cursors.count <= 1000 else { throw ClientError(message: "设备游标数量达到服务端上限。") }
-        try commit(value)
+        try await commit(value)
     }
-    func confirm(_ ids: [UUID]) throws {
+    func confirm(_ ids: [UUID]) async throws {
         var value = archive
         for id in ids { value.inbox[id]?.acknowledged = true }
-        try commit(value)
+        try await commit(value)
     }
-    func decryptPending(local: LocalDeviceKeys) throws {
-        let pending = archive.inbox.values.filter { !$0.decrypted }.sorted {
-            if $0.envelope.senderDeviceId == $1.envelope.senderDeviceId { return $0.envelope.seq < $1.envelope.seq }
-            return $0.envelope.senderDeviceId.uuidString < $1.envelope.senderDeviceId.uuidString
-        }
-        for item in pending {
-            var next = archive
-            do {
-                try decrypt(item.envelope, local: local, value: &next)
-                next.inbox[item.envelope.envelopeId]?.decrypted = true
-                next.inbox[item.envelope.envelopeId]?.error = nil
-            } catch {
-                next = archive // Never commit failed AEAD's tentative chain/OPK changes.
-                next.inbox[item.envelope.envelopeId]?.error = error.localizedDescription
+    func decryptPending(local: LocalDeviceKeys, retryFailures: Bool = true) async throws {
+        guard let user, let device else { throw ClientError(message: "聊天存储未绑定。") }
+        let snapshot = archive, current = generation, version = revision
+        let pending = snapshot.inbox.values.filter { !$0.decrypted && (retryFailures || $0.error == nil) }
+        guard !pending.isEmpty else { return }
+        let work = Task.detached(priority: .utility) {
+            var value = snapshot
+            let ordered = pending.sorted {
+                if $0.envelope.senderDeviceId == $1.envelope.senderDeviceId { return $0.envelope.seq < $1.envelope.seq }
+                return $0.envelope.senderDeviceId.uuidString < $1.envelope.senderDeviceId.uuidString
             }
-            try commit(next)
+            for item in ordered {
+                if Task.isCancelled { break }
+                do {
+                    try Self.decrypt(item.envelope, local: local, user: user, device: device, value: &value)
+                    value.inbox[item.envelope.envelopeId]?.decrypted = true
+                    value.inbox[item.envelope.envelopeId]?.error = nil
+                } catch { value.inbox[item.envelope.envelopeId]?.error = error.localizedDescription }
+            }
+            return value
         }
+        let value = await withTaskCancellationHandler(operation: { await work.value }, onCancel: { work.cancel() })
+        guard current == generation else { throw CancellationError() }
+        try Task.checkCancellation()
+        guard version == revision else { throw ClientError(message: "会话状态已更新，请重试处理待收消息。") }
+        try await commit(value) // One durable write per batch, not per message.
     }
-    private func decrypt(_ e: IncomingEnvelope, local: LocalDeviceKeys, value: inout ChatArchive) throws {
-        guard let user, let device, local.deviceId == device, let peer = value.peers[e.senderDeviceId] else {
+    nonisolated private static func decrypt(_ e: IncomingEnvelope, local: LocalDeviceKeys, user: UUID, device: UUID, value: inout ChatArchive) throws {
+        guard local.deviceId == device, let peer = value.peers[e.senderDeviceId] else {
             throw ClientError(message: "发送设备身份尚未核实，已保存密文等待处理。")
         }
+        guard value.messages[e.messageId] == nil else { throw ClientError(message: "消息编号重复，已保留原消息。") }
         let bytes = try e.packet(), text: String
+        var conversation = peer.user, outgoing = false
         if e.protocolVersion == DoubleRatchet.version {
             let packet = try JSONCodec.decoder().decode(RatchetPacket.self, from: bytes), h = packet.header
             guard h.senderId == peer.user, h.senderDeviceId == peer.device, h.recipientId == user,
                   h.recipientDeviceId == device, h.messageId == e.messageId else { throw ClientError(message: "密文路由绑定不匹配。") }
+            var consumedPrekey: Int?
             var session: ChatSession
             if let existing = value.sessions[h.sessionId] {
                 guard existing.peer.device == peer.device, existing.peer.identityHex == peer.identityHex else { throw ClientError(message: "会话身份不匹配。") }
@@ -224,11 +269,17 @@ struct ChatArchive: Codable {
                 }
                 session = ChatSession(id: h.sessionId, peer: peer,
                     ratchet: DoubleRatchet.responder(secret: try DoubleRatchet.responderSecret(local: local, bootstrap: initial), signedPrivate: local.signedPrekeyPrivate))
-                value.usedPrekeys[initial.oneTimePrekeyId] = h.sessionId
+                consumedPrekey = initial.oneTimePrekeyId
             }
             let opened = try DoubleRatchet.open(packet, state: session.ratchet)
+            if peer.user == user {
+                let copy = try OwnDeviceMessage.decode(opened.1, message: e.messageId)
+                conversation = copy.conversationId; outgoing = true; text = copy.text
+            } else { text = opened.1 }
             session.ratchet = opened.0; session.bootstrap = nil
-            value.sessions[h.sessionId] = session; text = opened.1
+            // No archive mutation until authentication and plaintext decoding succeed.
+            if let consumedPrekey { value.usedPrekeys[consumedPrekey] = h.sessionId }
+            value.sessions[h.sessionId] = session
         } else if e.protocolVersion == StoredMessageProtocol.version {
             // Read-only migration for old TEST packets; never creates a ratchet session.
             let old = try JSONCodec.decoder().decode(InitialEnvelope.self, from: bytes), h = old.header
@@ -243,7 +294,6 @@ struct ChatArchive: Codable {
             let opened = try old.open(secret: DoubleRatchet.responderSecret(local: local, bootstrap: bootstrap))
             guard let result = String(data: opened, encoding: .utf8) else { throw ClientError(message: "旧正文无效。") }; text = result
         } else { throw ClientError(message: "暂不支持此密文协议：\(e.protocolVersion)") }
-        guard value.messages[e.messageId] == nil else { throw ClientError(message: "消息编号重复，已保留原消息。") }
-        value.messages[e.messageId] = ChatMessage(id: e.messageId, friend: peer.user, text: text, outgoing: false, date: Date(), status: "已解密")
+        value.messages[e.messageId] = ChatMessage(id: e.messageId, friend: conversation, text: text, outgoing: outgoing, date: Date(), status: "已解密")
     }
 }

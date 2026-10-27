@@ -114,9 +114,10 @@ struct ChatTests {
 
 private final class MemoryCredentials: CredentialStore {
     var data: Data?
+    var failDelete = false
     func read() throws -> Data? { data }
     func write(_ data: Data) throws { self.data = data }
-    func delete() throws { data = nil }
+    func delete() throws { if failDelete { throw ClientError(message: "delete failed") }; data = nil }
 }
 
 private actor StubAuth: AuthRepository {
@@ -145,7 +146,45 @@ struct SessionTests {
         let credentials = MemoryCredentials()
         let auth = StubAuth()
         let defaults = UserDefaults(suiteName: "ChatTests.\(UUID())")!
-        return (AppModel(credentials: credentials, defaults: defaults, authRepository: auth), credentials, auth)
+        return (AppModel(credentials: credentials, defaults: defaults, authRepository: auth, deviceVault: DeviceKeyVault(store: MemoryCredentials())), credentials, auth)
+    }
+    @Test func revocationStopsRefreshAndStaleCloseDoesNotLogOutNewSession() async throws {
+        let (model, store, _) = fixture()
+        try await model.signIn(email: "a@example.com", password: "unused")
+        let old = model.identity
+        let refresh = Task { try await model.refreshAccessToken() }
+        await Task.yield()
+        model.handleDeviceRevoked(UUID(), session: old)
+        _ = await refresh.result
+        #expect(model.login == nil && store.data == nil)
+        try await model.signIn(email: "a@example.com", password: "unused")
+        model.handleDeviceRevoked(UUID(), session: old)
+        #expect(model.login != nil && store.data != nil)
+    }
+    @Test func failedCredentialDeletionBlocksRestoreButStillStopsSession() async throws {
+        let store = MemoryCredentials(), auth = StubAuth()
+        let defaults = UserDefaults(suiteName: "RevocationTests.\(UUID())")!
+        let model = AppModel(credentials: store, defaults: defaults, authRepository: auth)
+        try await model.signIn(email: "a@example.com", password: "unused")
+        store.failDelete = true
+        #expect(throws: (any Error).self) { try model.logout() }
+        #expect(model.login == nil && defaults.bool(forKey: "chat.credentials.blocked"))
+        let restored = AppModel(credentials: store, defaults: defaults, authRepository: auth)
+        #expect(restored.login == nil)
+        store.failDelete = false
+        try await restored.signIn(email: "a@example.com", password: "unused")
+        #expect(restored.login != nil && !defaults.bool(forKey: "chat.credentials.blocked"))
+    }
+    @Test func onlyExplicitRevocationCloseTriggersTermination() {
+        let connection = WebSocketConnection()
+        var count = 0
+        connection.onDeviceRevoked = { count += 1 }
+        connection.reportClose(code: 1006, reason: nil)
+        connection.reportClose(code: 4001, reason: Data("other".utf8))
+        #expect(count == 0)
+        connection.reportClose(code: 4001, reason: Data("device_revoked".utf8))
+        connection.reportClose(code: 4001, reason: Data("device_revoked".utf8))
+        #expect(count == 1)
     }
     @Test func refreshesOnceAndPersists() async throws {
         let (model, store, auth) = fixture()
@@ -221,18 +260,18 @@ struct AuthorizationRegressionTests {
         #expect(await transport.count == 0)
     }
     @Test func publicLoginDoesNotCarryBearer() async throws {
-        let transport = StubTransport(json: #"{"id":"11111111-1111-1111-1111-111111111111","username":"alice","display_name":"Alice","access_token":"test","refresh_token":"refresh"}"#)
+        let transport = StubTransport(json: "{\"code\":\"login_success\",\"login_ticket\":\"" + String(repeating: "a", count: 64) + "\",\"expires_in\":300}")
         let api = APIClient(configuration: ServerConfiguration(), transport: transport, legacyTransport: transport)
-        _ = try await RemoteAuthRepository(api: api).login(email: "a@example.com", password: "synthetic")
+        _ = try await TicketAuthRepository(api: api).ticket(email: "a@example.com", password: "synthetic")
         #expect(await transport.last?.value(forHTTPHeaderField: "Authorization") == nil)
     }
     @Test func websocketHandshakeRequiresBearer() throws {
-        let request = try AccessTokenHeader.webSocketRequest(configuration: ServerConfiguration(), token: "synthetic-token")
+        let request = try AccessTokenHeader.webSocketRequest(configuration: ServerConfiguration(), token: "synthetic-token", deviceID: UUID())
         #expect(request.value(forHTTPHeaderField: "authorization") == "Bearer synthetic-token")
         #expect(request.url?.scheme == "wss")
         #expect(request.url?.query == nil)
-        #expect(throws: ClientError.self) { try AccessTokenHeader.webSocketRequest(configuration: ServerConfiguration(), token: "") }
-        #expect(throws: ClientError.self) { try AccessTokenHeader.webSocketRequest(configuration: ServerConfiguration(), token: "bad\r\nheader") }
+        #expect(throws: ClientError.self) { try AccessTokenHeader.webSocketRequest(configuration: ServerConfiguration(), token: "", deviceID: UUID()) }
+        #expect(throws: ClientError.self) { try AccessTokenHeader.webSocketRequest(configuration: ServerConfiguration(), token: "bad\r\nheader", deviceID: UUID()) }
     }
     @Test func postWireRetainsJSONAndUTF8Length() throws {
         var request = URLRequest(url: URL(string: "https://example.com/request_friendship")!)

@@ -4,6 +4,8 @@ import Foundation
 /// client frame masking and TLS. The HTTP worker must hand off and return 101 first.
 @MainActor
 final class WebSocketConnection: NSObject, URLSessionWebSocketDelegate {
+    var onDeviceRevoked: (() -> Void)?
+    private var reportedRevocation = false
     private var session: URLSession?
     private var socket: URLSessionWebSocketTask?
     private var opening: CheckedContinuation<Void, Error>?
@@ -45,7 +47,8 @@ final class WebSocketConnection: NSObject, URLSessionWebSocketDelegate {
     }
     func receive() async throws -> URLSessionWebSocketTask.Message {
         guard isOpen, let socket else { throw URLError(.notConnectedToInternet) }
-        return try await socket.receive()
+        do { return try await socket.receive() }
+        catch { reportClose(code: socket.closeCode.rawValue, reason: socket.closeReason); throw error }
     }
     func send(_ data: Data) async throws {
         guard isOpen, let socket else { throw ClientError(message: "WebSocket 握手尚未完成。") }
@@ -61,6 +64,11 @@ final class WebSocketConnection: NSObject, URLSessionWebSocketDelegate {
                 if let error { continuation.resume(throwing: error) } else { continuation.resume() }
             }
         }
+    }
+    func reportClose(code: Int, reason: Data?) {
+        guard code == 4001, reason.flatMap({ String(data: $0, encoding: .utf8) }) == "device_revoked",
+              !reportedRevocation else { return }
+        reportedRevocation = true; onDeviceRevoked?()
     }
     func close() {
         isOpen = false
@@ -88,6 +96,7 @@ final class WebSocketConnection: NSObject, URLSessionWebSocketDelegate {
                                 didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         Task { @MainActor [weak self] in
             guard let self, self.socket === webSocketTask else { return }
+            self.reportClose(code: closeCode.rawValue, reason: reason)
             self.isOpen = false
             self.finishOpening(.failure(URLError(.networkConnectionLost)))
         }

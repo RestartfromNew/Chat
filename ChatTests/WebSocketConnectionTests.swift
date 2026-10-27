@@ -5,7 +5,7 @@ import Testing
 @testable import Chat
 
 private final class UpgradeFixture: @unchecked Sendable {
-    enum Mode { case upgrade, storedMessage, notFound, unauthorized, silent }
+    enum Mode { case upgrade, storedMessage, notFound, unauthorized, silent, revoked }
     let mode: Mode
     private let queue = DispatchQueue(label: "chat.test.upgrade")
     private var listener: NWListener?
@@ -52,6 +52,10 @@ private final class UpgradeFixture: @unchecked Sendable {
             if mode == .storedMessage {
                 client.send(content: Data(response.utf8), completion: .contentProcessed { _ in })
                 readMessage(client, accumulated: Data())
+            } else if mode == .revoked {
+                let payload = Data([0x0f, 0xa1]) + Data("device_revoked".utf8)
+                client.send(content: Data(response.utf8) + Data([0x88, UInt8(payload.count)]) + payload,
+                    completion: .contentProcessed { _ in })
             } else {
                 client.send(content: Data(response.utf8) + Data([0x81, 2, 0x6f, 0x6b]), completion: .contentProcessed { _ in })
             }
@@ -88,7 +92,7 @@ private final class UpgradeFixture: @unchecked Sendable {
 
 @MainActor struct WebSocketConnectionTests {
     private func request(_ port: UInt16) -> URLRequest {
-        var value = try! AccessTokenHeader.webSocketRequest(configuration: ServerConfiguration(), token: "fixture-only")
+        var value = try! AccessTokenHeader.webSocketRequest(configuration: ServerConfiguration(), token: "fixture-only", deviceID: UUID(uuidString: "11111111-2222-4333-8444-555555555555")!)
         value.url = URL(string: "ws://127.0.0.1:\(port)/")!
         value.setValue("Bearer fixture-only", forHTTPHeaderField: "Authorization"); return value
     }
@@ -109,6 +113,7 @@ private final class UpgradeFixture: @unchecked Sendable {
         #expect(headers.lowercased().contains("connection: upgrade"))
         #expect(headers.lowercased().contains("authorization: bearer fixture-only"))
         #expect(headers.lowercased().contains("sec-websocket-version: 13"))
+        #expect(headers.lowercased().contains("deviceid: 11111111-2222-4333-8444-555555555555\r\n"))
     }
     @Test func maskedBusinessFrameRoundTripsThroughNativeSocket() async throws {
         let fixture = UpgradeFixture(.storedMessage), connection = WebSocketConnection(), business = WebSocketBusinessRequest()
@@ -126,6 +131,17 @@ private final class UpgradeFixture: @unchecked Sendable {
         let receipt = try await business.perform(data: frame, id: id, duration: .seconds(3),
             send: { try await connection.send($0) }, invalidate: { connection.close() })
         #expect(receipt.messageId == id && receipt.seq == 7 && !receipt.duplicate)
+    }
+    @Test func actualRevocationCloseIsDeliveredExactlyOnce() async throws {
+        let fixture = UpgradeFixture(.revoked), connection = WebSocketConnection()
+        defer { connection.close(); fixture.stop() }
+        var revoked = 0
+        connection.onDeviceRevoked = { revoked += 1 }
+        try await connection.open(request(try await fixture.start()))
+        do { _ = try await connection.receive() } catch {}
+        // Delegate and receive error can both report the same close.
+        for _ in 0..<20 where revoked == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(revoked == 1)
     }
     @Test func handshakeRequiresTokenAnd401IsAvailableForRefresh() async throws {
         let fixture = UpgradeFixture(.unauthorized), connection = WebSocketConnection()

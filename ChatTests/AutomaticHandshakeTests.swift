@@ -161,7 +161,7 @@ struct AutomaticHandshakeTests {
         #expect(wire.request?.url?.path == "/get_device_key_bundle" && wire.request?.httpMethod == "POST")
         #expect(wire.request?.value(forHTTPHeaderField: "Authorization") == "Bearer test-token")
         let body = try JSONSerialization.jsonObject(with: wire.request!.httpBody!) as! [String: String]
-        #expect(body["friend_id"] == f.friend.id.uuidString.lowercased() && body["device_id"] == f.device.id.uuidString.lowercased())
+        #expect(body["target_user_id"] == f.friend.id.uuidString.lowercased() && body["device_id"] == f.device.id.uuidString.lowercased())
     }
     @Test func resetDuringFetchDiscardsOldAccountResults() async throws {
         let f = try await fixture(), model = HandshakePreparation()

@@ -8,33 +8,43 @@ final class AppModel: ObservableObject {
     @Published var startupError: String?
     @Published private(set) var identity = UUID()
     let socket = SocketConsole()
+    lazy var friendRequests = FriendRequestsModel(app: self)
     lazy var chats = ChatCoordinator(app: self)
     let encryptedMessaging = StoredMessageOutbox()
-    lazy var devices = DeviceCoordinator(sessions: chats.store)
+    lazy var devices = DeviceCoordinator(vault: deviceVaultOverride ?? DeviceKeyVault(), sessions: chats.store)
     let handshakePreparation = HandshakePreparation()
     var deviceRepository: RemoteDeviceRepository { RemoteDeviceRepository(api: APIClient(configuration: configuration)) }
     func deviceScope() throws -> String {
         guard let login else { throw ClientError(message: "请先登录。") }
         return try DeviceKeyVault.scope(server: configuration, user: login.id)
     }
+    private let deviceVaultOverride: DeviceKeyVault?
     private let credentials: any CredentialStore
     private let defaults: UserDefaults
     private let authOverride: (any AuthRepository)?
+    private var signingIn = false
+    private var credentialCleanup: Task<Void, Never>?
     private var refreshing: (id: UUID, task: Task<RefreshResponse, Error>)?
     var auth: any AuthRepository { authOverride ?? RemoteAuthRepository(api: APIClient(configuration: configuration)) }
     var friends: RemoteFriendsRepository { RemoteFriendsRepository(api: APIClient(configuration: configuration)) }
 
-    init(credentials: any CredentialStore = KeychainStore(), defaults: UserDefaults = .standard, authRepository: (any AuthRepository)? = nil) {
+    init(credentials: any CredentialStore = KeychainStore(), defaults: UserDefaults = .standard, authRepository: (any AuthRepository)? = nil, deviceVault: DeviceKeyVault? = nil) {
+        self.deviceVaultOverride = deviceVault
         self.authOverride = authRepository
         self.credentials = credentials; self.defaults = defaults
         configuration = defaults.data(forKey: "chat.server.v1")
             .flatMap { try? JSONDecoder().decode(ServerConfiguration.self, from: $0) } ?? ServerConfiguration()
         do {
+            if defaults.bool(forKey: "chat.credentials.blocked") {
+                try credentials.delete()
+                defaults.removeObject(forKey: "chat.credentials.blocked")
+            }
             if let data = try credentials.read() {
                 let saved = try JSONDecoder().decode(SavedSession.self, from: data)
                 if saved.server == configuration { login = saved.login }
             }
         } catch { startupError = error.localizedDescription }
+        if defaults.bool(forKey: "chat.credentials.blocked") { scheduleCredentialCleanup() }
         let migrated = configuration.migratedWebSocket
         if migrated != configuration {
             configuration = migrated
@@ -52,40 +62,40 @@ final class AppModel: ObservableObject {
         configuration = config
     }
     func connectWebSocket() async throws {
+        _ = friendRequests // Subscribe before the first frame can arrive.
         guard let login else { throw ClientError(message: "请先登录。") }
+        guard let local = try devices.vault.load(deviceScope()), local.phase == .registered, let device = local.deviceId else {
+            throw ClientError(message: "请先注册本机设备，再建立在线连接。")
+        }
         let current = identity
-        do { try await socket.connect(configuration: configuration, token: login.accessToken) }
+        do { try await socket.connect(configuration: configuration, token: login.accessToken, deviceID: device, onRevoked: { [weak self] id in self?.handleDeviceRevoked(id, session: current) }) }
         catch let error as WebSocketHandshakeError where error.status == 401 {
             guard current == identity else { throw CancellationError() }
             let token = try await refreshAccessToken(rejectedToken: login.accessToken)
             guard current == identity else { throw CancellationError() }
-            try await socket.connect(configuration: configuration, token: token)
+            try await socket.connect(configuration: configuration, token: token, deviceID: device, onRevoked: { [weak self] id in self?.handleDeviceRevoked(id, session: current) })
         }
         guard current == identity else { throw CancellationError() }
     }
 
     func signIn(email: String, password: String) async throws {
+        guard !signingIn else { throw ClientError(message: "登录正在进行，请稍候。") }
+        signingIn = true
+        defer { signingIn = false }
+        if defaults.bool(forKey: "chat.credentials.blocked") {
+            try credentials.delete()
+            defaults.removeObject(forKey: "chat.credentials.blocked")
+        }
+        credentialCleanup?.cancel(); credentialCleanup = nil
         let generation = identity
         let result: LoginResponse
         if authOverride != nil { result = try await auth.login(email: email, password: password) }
         else {
-            let repo = RemoteAuthRepository(api: APIClient(configuration: configuration))
-            var deviceID = try devices.vault.loginDevice(server: configuration, email: email)
-            var response = try await repo.login(email: email, password: password, deviceID: deviceID)
-            guard generation == identity else { throw CancellationError() }
-            // An older saved session has no email index. Resolve its account first,
-            // then authenticate with the existing device instead of replacing its keys.
-            if deviceID == nil {
-                let scope = try DeviceKeyVault.scope(server: configuration, user: response.id)
-                if let local = try devices.vault.load(scope), local.phase == .registered, let id = local.deviceId {
-                    deviceID = id
-                    response = try await repo.login(email: email, password: password, deviceID: id)
-                }
+            let flow = DeviceLoginFlow(vault: devices.vault,
+                repository: TicketAuthRepository(api: APIClient(configuration: configuration)))
+            result = try await flow.signIn(server: configuration, email: email, password: password) {
+                guard generation == self.identity else { throw CancellationError() }
             }
-            guard generation == identity else { throw CancellationError() }
-            try devices.vault.bindLogin(server: configuration, email: email, user: response.id,
-                                       status: deviceID == nil ? nil : response.deviceStatus)
-            result = response
         }
         guard generation == identity else { throw CancellationError() }
         try persist(result)
@@ -96,13 +106,50 @@ final class AppModel: ObservableObject {
         try credentials.write(JSONEncoder().encode(SavedSession(server: configuration, login: login)))
     }
     func logout() throws {
-        try credentials.delete()
+        // Block automatic restoration before touching Keychain; deletion failure must
+        // never leave a live session or allow an old refresh to resurrect tokens.
+        defaults.set(true, forKey: "chat.credentials.blocked")
+        identity = UUID(); login = nil
         refreshing?.task.cancel(); refreshing = nil
-        socket.disconnect(); socket.clear()
-        handshakePreparation.reset()
-        chats.reset()
-        encryptedMessaging.reset()
-        login = nil; identity = UUID()
+        friendRequests.reset(); chats.reset(); socket.disconnect(); socket.clear()
+        handshakePreparation.reset(); encryptedMessaging.reset()
+        do { try credentials.delete(); defaults.removeObject(forKey: "chat.credentials.blocked") }
+        catch { scheduleCredentialCleanup(); throw error }
+    }
+    private func scheduleCredentialCleanup() {
+        credentialCleanup?.cancel()
+        credentialCleanup = Task { [weak self] in
+            for delay in [1, 2, 5, 10, 30] {
+                do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+                guard let self, self.login == nil, self.defaults.bool(forKey: "chat.credentials.blocked") else { return }
+                do {
+                    try self.credentials.delete()
+                    self.defaults.removeObject(forKey: "chat.credentials.blocked"); return
+                } catch { self.startupError = "登录凭据清理失败，将重试：" + error.localizedDescription }
+            }
+        }
+    }
+    func handleDeviceRevoked(_ device: UUID, session: UUID) {
+        guard identity == session, login != nil else { return }
+        var cleanupError: String?
+        do {
+            let scope = try deviceScope()
+            if var local = try devices.vault.load(scope), local.deviceId == device {
+                local.phase = .unavailable
+                try devices.vault.save(local, scope: scope)
+            }
+        } catch { cleanupError = error.localizedDescription }
+        do { try logout() } catch { cleanupError = error.localizedDescription }
+        startupError = "设备已撤销，请重新登录。" + (cleanupError.map { "本地清理异常：" + $0 } ?? "")
+    }
+    func revokeDevice(_ device: UUID, password: String) async throws -> DeviceRevocation {
+        let current = identity
+        let localID = try devices.vault.load(deviceScope())?.deviceId
+        let repo = deviceRepository
+        let result = try await authorized { try await repo.revoke(device: device, password: password, token: $0) }
+        guard identity == current else { throw CancellationError() }
+        if localID == device { handleDeviceRevoked(device, session: current) }
+        return result
     }
     func authorized<T>(_ action: (String) async throws -> T) async throws -> T {
         guard let session = login else { throw ClientError(message: "请先登录。") }
@@ -137,7 +184,7 @@ final class AppModel: ObservableObject {
             guard identity == generation else { throw CancellationError() }
             guard result.id == session.id else { throw ClientError(message: "刷新返回了不匹配的用户身份。") }
             let updated = LoginResponse(id: session.id, username: session.username, displayName: session.displayName,
-                                        accessToken: result.accessToken, refreshToken: result.refreshToken, deviceStatus: session.deviceStatus)
+                                        accessToken: result.accessToken, refreshToken: result.refreshToken, deviceStatus: session.deviceStatus, deviceId: session.deviceId)
             try persist(updated); login = updated
             return updated.accessToken
         } catch let error as APIError where error.status == 401 {

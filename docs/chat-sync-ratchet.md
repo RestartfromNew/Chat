@@ -1,6 +1,6 @@
 # 聊天、信封同步与经典双棘轮
 
-2026-10-13；后端 `2862bac`，以 `docs/backend-api.md` 第 18 节及当前 Dispatcher/Worker 为准。旧 e2ee 设计里的批量 submit、push、sync 等名称不能当作已部署 API。
+2026-10-16；后端 `53c3954`，以 `docs/backend-api.md` 第 18 节及当前 Dispatcher/Worker 为准。旧 e2ee 设计里的批量 submit、push、sync 等名称不能当作已部署 API。
 
 ## 使用
 
@@ -8,11 +8,13 @@
 
 主标签只有好友、申请、我的。设备注册留在“我的”；Token 诊断、连接测试、旧握手报文和加密实验移入“我的 → 开发调试”。未知设备/无法解密的信封保留在本地，在“收信处理状态”可查看。不会显示 S、链密钥、私钥或完整业务帧。
 
-当前无实时推送、自动后台常驻和 APNs；刷新拉取新消息。`ChatCoordinator.ingestOnlinePush` 是未来推送适配入口，走同一持久化/认证解密链路，但**不推进同步游标**，避免跳过未推送的早期消息。待 ACK 信息持久化，下一次串行同步补发。尚未定义的 push 类型不会被猜测为有效信封。
+前台已连接时自动接收 `Online_Sync`，校验外层 recipientDeviceId/seq 与内层信封及本机设备一致，再保存、解密显示、ACK。推送与请求回执分别分派，允许插入同步/ACK/发送响应之间。在线包不推进同步游标，避免跳过更早的离线包。原包按 envelope_id 去重，待 ACK 状态可靠保存。
+
+断线后在前台按 1、2、4、8、16、30 秒上限重连，连接成功后从持久化游标补拉。进入后台断开，回前台重新同步；没有后台常驻或 APNs。403 设备拒绝不会不停自动重试，修复注册状态后手动刷新。
 
 ## 传输与鉴权
 
-- 根路径 `wss://aittelegramapi.uk/`，GET、Content-Length: 0、Authorization: Bearer。系统生成标准 Upgrade、随机 Key、Version、帧掩码并校验 Accept。
+- 根路径 `wss://aittelegramapi.uk/`，GET、Content-Length: 0、Authorization: Bearer、deviceID（本机已注册 UUID）。系统生成标准 Upgrade、随机 Key、Version、帧掩码并校验 Accept。
 - 握手 HTTP 401 时走既有 HTTP refresh，一次重试；其他握手错误不循环刷新。
 - 每条业务 JSON 仍带小写 authorization。业务鉴权失败单次刷新，超时不自动换消息 ID。
 - 正式发送仍用 `chat.newTextMessage`，包含 sender_device_id、recipient_device_id、message_id、protocol_version、packet_base64。
@@ -63,11 +65,23 @@ Alice 以 X3DH S 和 Bob 的 SPK 公钥初始化，生成独立棘轮私钥。Bo
 - ChatStore.swift：原子状态提交、身份固定、发件箱、收件去重、原包/正文存储与清理标记。
 - EnvelopeAPI.swift：真实后端 DTO、请求构造、分页与 ACK 验证。
 - WebSocketBusinessRequest / SocketConsole：串行收发、回执分派、断线与超时。
-- ChatCoordinator.swift：好友设备目录、会话准备、分页、ACK、发送重试及未来在线入口。
+- ChatCoordinator.swift：好友设备目录、会话准备、分页、ACK、发送重试及在线推送接收。
 - ConversationView.swift：正文气泡、发送、刷新、失败重试；诊断在独立模块。
 
 ## 验证范围
 
 测试覆盖 A/B 初始化及多轮 DH 更新、同链/跨链乱序、篡改回滚、重放拒绝、缓存上限、重启恢复、原包重试、持久化失败不推进棘轮、多设备独立加密、跨账号/服务器隔离、OPK 清理与拒绝复用、原包先落盘、部分 ACK 保留、推送不越过离线游标、握手 Token 头与 401。尚未使用真实双账户向公网发送聊天消息，也未验证其他客户端实现的互通。
 
-最终验证：Xcode 27 / iPhone 17 模拟器，90 项测试通过；Release 模拟器构建成功；git diff --check 通过。附加覆盖延迟的设备库写入不能恢复已清理秘密、清理后的 OPK 编号不会复用，以及同步/ACK 与发送回执的串行隔离。上游 XEdDSA C 源码仍有整数缩窄编译警告，未修改第三方密码实现。
+最终验证：Xcode 27 / iPhone 17 模拟器，101 项测试通过；Release 模拟器构建成功；git diff --check 通过。附加覆盖延迟的设备库写入不能恢复已清理秘密、清理后的 OPK 编号不会复用，以及同步/ACK 与发送回执的串行隔离。上游 XEdDSA C 源码仍有整数缩窄编译警告，未修改第三方密码实现。
+
+
+## 启动与在线处理性能
+
+ChatArchiveIO 用独立串行队列读取、解码和写入 Keychain 档案，缓存完整档案，不再在每次提交前读取并解码整份历史。ChatStore 首次 bind 异步恢复；同一绑定直接复用。双棘轮收信解密在 utility 任务批量处理，认证成功才修改试算状态，整批一次提交。取消/退出后旧任务不能发布到新账号。
+
+在线事件用 25ms 短窗口合并，最多积压 256 包/8MiB；超限断开后用同步恢复。仅遇到未知发送设备才查询好友目录，每次最多并发 4 个设备请求，并合并一次保存。启动/回前台合并重复同步，已连接且两秒内刚同步不重复拉取。
+
+测试新增覆盖后端混合大小写字段、目标/序号不匹配拒绝、队列上限/去重、握手 deviceID，以及三条在线密文批量解密后同步重放不推进棘轮、单批只写一次、存储不访问主线程。没有真实设备启动耗时基准；大规模聊天历史仍需后续迁移加密数据库。
+
+
+同账号设备使用同一双棘轮协议，但发给本人设备的正文是加密的 `chat.sent-copy.v1` 结构，包含 conversationId、messageId、text。仅在通过身份固定验证的同账号会话中解释为同步副本。详见 [设备同步与撤销](device-sync-revocation.md)。

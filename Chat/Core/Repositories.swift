@@ -10,12 +10,7 @@ protocol AuthRepository {
 struct RemoteAuthRepository: AuthRepository {
     let api: APIClient
     func login(email: String, password: String) async throws -> LoginResponse {
-        try await login(email: email, password: password, deviceID: nil)
-    }
-    func login(email: String, password: String, deviceID: UUID?) async throws -> LoginResponse {
-        var body = ["email": email, "password": password]
-        if let deviceID { body["device_id"] = deviceID.uuidString.lowercased() }
-        return try await api.decode(LoginResponse.self, path: "login_by_email", method: "POST", body: body, authentication: .none)
+        throw ClientError(message: "请通过设备登录流程完成登录。")
     }
     func register(email: String, password: String, username: String, displayName: String) async throws -> ChatUser {
         try await api.decode(ChatUser.self, path: "register_by_email", method: "POST",

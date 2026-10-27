@@ -16,8 +16,9 @@ private struct ExistingDeviceSession: DeviceSessionLookup {
 private final class DeviceWire: HTTPTransport, @unchecked Sendable {
     var requests: [URLRequest] = []
     var response = Data()
+    var status = 201
     func send(_ request: URLRequest) async throws -> HTTPResult {
-        requests.append(request); return HTTPResult(status: 201, data: response)
+        requests.append(request); return HTTPResult(status: status, data: response)
     }
 }
 @MainActor
@@ -137,25 +138,30 @@ struct DeviceTests {
         try vault.bindLogin(server: config, email: "alice@example.org", user: user, status: "unavailable")
         #expect(try coordinator.local(scope).phase == .unavailable)
     }
-    @Test func protectedTypedPostAndDeviceDecoding() async throws {
+    @Test func protectedDeviceDirectoryDecoding() async throws {
         let wire = DeviceWire(), id = UUID()
-        wire.response = Data("{\"device_id\":\"\(id)\",\"device_status\":\"active\"}".utf8)
-        let api = APIClient(configuration: ServerConfiguration(), transport: wire, legacyTransport: wire)
-        let repo = RemoteDeviceRepository(api: api)
-        let result = try await repo.register(LocalDeviceKeys.generate().registration(name: "phone"), token: "test-token")
-        #expect(result.deviceId == id)
-        let request = try #require(wire.requests.first)
-        #expect(request.httpMethod == "POST")
-        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-token")
-        #expect(request.url?.path == "/register_device")
         wire.response = Data("{\"friend_id\":\"\(id)\",\"devices\":[]}".utf8)
+        let repo = RemoteDeviceRepository(api: APIClient(configuration: ServerConfiguration(), transport: wire, legacyTransport: wire))
         #expect(try await repo.devices(friend: id, token: "test-token").devices.isEmpty)
-        #expect(wire.requests.count == 2)
-        wire.response = Data("{\"id\":\"\(id)\",\"username\":\"alice\",\"display_name\":\"Alice\",\"access_token\":\"a\",\"refresh_token\":\"r\",\"device_status\":\"verified\"}".utf8)
-        let login = try await RemoteAuthRepository(api: api).login(email: "alice@example.org", password: "p", deviceID: id)
-        #expect(login.deviceStatus == "verified")
-        let loginJSON = try JSONSerialization.jsonObject(with: wire.requests.last!.httpBody!) as! [String: String]
-        #expect(loginJSON["device_id"] == id.uuidString.lowercased())
+        #expect(wire.requests.first?.value(forHTTPHeaderField: "Authorization") == "Bearer test-token")
+    }
+    @Test func ownDirectoryAndRevocationWireContracts() async throws {
+        let wire = DeviceWire(), user = UUID(), device = UUID()
+        let repo = RemoteDeviceRepository(api: APIClient(configuration: ServerConfiguration(), transport: wire, legacyTransport: wire))
+        wire.response = try JSONSerialization.data(withJSONObject: ["friend_id": user.uuidString, "target_user_id": user.uuidString, "is_own_device": true, "devices": []])
+        let own = try await repo.ownDevices(token: "test-token")
+        try own.validate(target: user, actor: user)
+        #expect(wire.requests.last?.url?.path == "/user_devices")
+        #expect(try JSONSerialization.jsonObject(with: wire.requests.last!.httpBody!) as? [String: String] == [:])
+        wire.response = try JSONSerialization.data(withJSONObject: ["device_id": device.uuidString, "status": "revoked", "already_revoked": true, "websocket_closed": false])
+        wire.status = 202
+        let revoked = try await repo.revoke(device: device, password: " keep spaces ", token: "test-token")
+        #expect(revoked.alreadyRevoked && !revoked.websocketClosed)
+        let body = try JSONSerialization.jsonObject(with: wire.requests.last!.httpBody!) as! [String: String]
+        #expect(body["deviceID"] == device.uuidString.lowercased() && body["device_id"] == nil)
+        #expect(body["password"] == " keep spaces ")
+        #expect(throws: (any Error).self) { try revoked.validate(device: UUID()) }
+        #expect(throws: (any Error).self) { try own.validate(target: UUID(), actor: user) }
     }
     @Test func uploadAndClaimWireContracts() async throws {
         let wire = DeviceWire(), device = UUID(), friend = UUID()
@@ -170,7 +176,7 @@ struct DeviceTests {
         #expect(claimed.prekeyId == 1001 && claimed.friendId == friend)
         #expect(wire.requests.last?.url?.path == "/get_one_time_prekey")
         let claim = try JSONSerialization.jsonObject(with: wire.requests.last!.httpBody!) as! [String: String]
-        #expect(claim["friend_id"] == friend.uuidString.lowercased())
+        #expect(claim["target_user_id"] == friend.uuidString.lowercased())
         #expect(claim["device_id"] == device.uuidString.lowercased())
         #expect(wire.requests.allSatisfy { $0.httpMethod == "POST" && $0.value(forHTTPHeaderField: "Authorization") == "Bearer token" })
     }
